@@ -1,0 +1,2 @@
+artifacts/chunk_index.faiss filter=lfs diff=lfs merge=lfs -text
+artifacts/bm25_chunks.sqlite filter=lfs diff=lfs merge=lfs -text

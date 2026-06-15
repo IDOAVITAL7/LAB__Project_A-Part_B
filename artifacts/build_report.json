@@ -1,0 +1,21 @@
+{
+  "build_time_s": 2218.7,
+  "num_pages": 27074,
+  "num_chunks": 384588,
+  "page_vocab": 691427,
+  "chunk_vocab": 691427,
+  "artifact_sizes": {
+    "bm25_chunk_stats.json": 28.67,
+    "bm25_page_stats.json": 24.87,
+    "chunk_index.faiss": 590.73,
+    "chunk_meta.json": 58.54,
+    "config.json": 0.0,
+    "inverted_index_chunks.json.gz": 137.27,
+    "inverted_index_pages.json.gz": 56.79,
+    "page_index.faiss": 41.59,
+    "page_meta.json": 13.47,
+    "pages_meta.json": 9.64,
+    "title_index.faiss": 41.59,
+    "title_meta.json": 0.9
+  }
+}
