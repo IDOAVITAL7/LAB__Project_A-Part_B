@@ -41,3 +41,4 @@ sample_data/
 # Local optimizer helper scripts
 scripts/export_optimizer_features.py
 scripts/optimize_params.py
+scripts/optimize_rrf_reference.py
