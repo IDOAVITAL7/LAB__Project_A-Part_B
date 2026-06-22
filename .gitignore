@@ -26,3 +26,18 @@ experiments.json
 
 .ipynb_checkpoints/
 .DS_Store
+
+# Local optimizer outputs - do not commit
+optimization_runs/
+local_backups/
+stable_baselines/
+artifacts_backup_*/
+artifacts_exp/
+dump/
+sample_data/
+*.log
+*.tsv
+
+# Local optimizer helper scripts
+scripts/export_optimizer_features.py
+scripts/optimize_params.py

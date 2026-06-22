@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import pickle
 import zlib
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -61,6 +62,59 @@ _WEIGHTS: Dict[str, float] = {
     "source_bonus":   0.02,
 }
 
+DEFAULT_FUSION_WEIGHTS = {
+    "dense_chunk":    0.20,
+    "bm25_chunk":     0.36,
+    "dense_page":     0.13,
+    "bm25_page":      0.14,
+    "dense_title":    0.06,
+    "title_overlap":  0.04,
+    "year_num_match": 0.05,
+    "source_bonus":   0.02,
+}
+
+W = DEFAULT_FUSION_WEIGHTS.copy()
+
+
+def _apply_optimizer_config(cfg):
+    """
+    Apply optimizer-controlled runtime parameters from artifacts/config.json.
+    This lets optimize_params.py change fusion weights during full evaluation.
+
+    Important:
+    _rerank currently reads _WEIGHTS, so this function updates both W and _WEIGHTS.
+    """
+    global W, _WEIGHTS
+
+    merged_cfg = {}
+    if isinstance(cfg, dict):
+        merged_cfg.update(cfg)
+
+    # Strong runtime read from artifacts/config.json.
+    # This protects us even if state["cfg"] is stale.
+    try:
+        config_path = Path(__file__).resolve().parent / "artifacts" / "config.json"
+        if config_path.exists():
+            file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(file_cfg, dict):
+                merged_cfg.update(file_cfg)
+    except Exception:
+        pass
+
+    weights = DEFAULT_FUSION_WEIGHTS.copy()
+    optimizer_weights = merged_cfg.get("fusion_weights", {}) or {}
+
+    if isinstance(optimizer_weights, dict):
+        for k, v in optimizer_weights.items():
+            if k in weights:
+                try:
+                    weights[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+
+    W = weights
+    _WEIGHTS = weights
+
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
@@ -88,11 +142,13 @@ def search_batch(
     # ── Steps 2–6: Per-query retrieval and reranking ───────────────────────────
     results: List[List[int]] = []
 
-    tk_title   = cfg.get("retrieval_top_k_title",       50)
-    tk_page    = cfg.get("retrieval_top_k_page",        150)
-    tk_chunk   = cfg.get("retrieval_top_k_chunk",       500)
-    tk_bp      = cfg.get("retrieval_top_k_bm25_page",   200)
-    tk_bc      = cfg.get("retrieval_top_k_bm25_chunk",  300)
+    _apply_optimizer_config(cfg)
+
+    tk_title   = cfg.get("top_k_title", cfg.get("retrieval_top_k_title", 50))
+    tk_page    = cfg.get("top_k_page", cfg.get("retrieval_top_k_page", 150))
+    tk_chunk   = cfg.get("top_k_chunk", cfg.get("retrieval_top_k_chunk", 500))
+    tk_bp      = cfg.get("top_k_bm25_page", cfg.get("retrieval_top_k_bm25_page", 200))
+    tk_bc      = cfg.get("top_k_bm25_chunk", cfg.get("retrieval_top_k_bm25_chunk", 300))
 
     for q_idx, query in enumerate(queries):
         start, end = spans[q_idx]

@@ -20,5 +20,43 @@
   "use_bm25_chunk_sqlite": true,
   "chunk_query_variants": 1,
   "bm25_query_variants": false,
-  "bm25_chunk_sqlite_in_memory": true
+  "bm25_chunk_sqlite_in_memory": true,
+  "top_k_title": 50,
+  "top_k_page": 120,
+  "top_k_chunk": 160,
+  "top_k_bm25_page": 120,
+  "top_k_bm25_chunk": 120,
+  "fusion_weights": {
+    "dense_chunk": 0.0,
+    "bm25_chunk": 0.4772633574271793,
+    "dense_page": 0.19976524967096407,
+    "bm25_page": 0.05250513641558254,
+    "dense_title": 0.0,
+    "title_overlap": 0.0,
+    "year_num_match": 0.270466256486274,
+    "source_bonus": 0.0
+  },
+  "normalization": {
+    "scope": "per_query",
+    "method": "minmax",
+    "norm_rrf_k": 60,
+    "score_clip_percentile": null,
+    "source_exponent": 1.0
+  },
+  "subquery_aggregation": {
+    "mode": "baseline",
+    "primary_query_weight": 1.0,
+    "variant_query_weight": 1.0,
+    "intersection_boost_weight": 0.0,
+    "coverage_boost_weight": 0.0,
+    "agg_rrf_k": 60,
+    "max_vs_mean_alpha": 1.0
+  },
+  "query_generation": {
+    "chunk_query_variants": 1,
+    "bm25_query_variants": false,
+    "max_bm25_query_tokens": null,
+    "use_subpart_variant": false,
+    "use_rare_token_variant": false
+  }
 }
