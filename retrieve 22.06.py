@@ -74,21 +74,24 @@ DEFAULT_FUSION_WEIGHTS = {
 }
 
 W = DEFAULT_FUSION_WEIGHTS.copy()
-_RUNTIME_CFG: Dict[str, Any] = {}
 
 
-def _read_runtime_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _apply_optimizer_config(cfg):
     """
-    Merge the cached artifact config with a strong read from artifacts/config.json.
+    Apply optimizer-controlled runtime parameters from artifacts/config.json.
+    This lets optimize_params.py change fusion weights during full evaluation.
 
-    The RRF optimizer temporarily edits artifacts/config.json before launching
-    eval_public.py. Reading the file here makes sure retrieve.py sees that
-    runtime config even if state["cfg"] was loaded earlier.
+    Important:
+    _rerank currently reads _WEIGHTS, so this function updates both W and _WEIGHTS.
     """
-    merged_cfg: Dict[str, Any] = {}
+    global W, _WEIGHTS
+
+    merged_cfg = {}
     if isinstance(cfg, dict):
         merged_cfg.update(cfg)
 
+    # Strong runtime read from artifacts/config.json.
+    # This protects us even if state["cfg"] is stale.
     try:
         config_path = Path(__file__).resolve().parent / "artifacts" / "config.json"
         if config_path.exists():
@@ -97,20 +100,6 @@ def _read_runtime_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
                 merged_cfg.update(file_cfg)
     except Exception:
         pass
-
-    return merged_cfg
-
-
-def _apply_optimizer_config(cfg):
-    """
-    Apply optimizer-controlled runtime parameters from artifacts/config.json.
-
-    This preserves the previous optimizer behavior for fusion_weights while also
-    exposing the merged runtime config to the new RRF path.
-    """
-    global W, _WEIGHTS, _RUNTIME_CFG
-
-    merged_cfg = _read_runtime_config(cfg)
 
     weights = DEFAULT_FUSION_WEIGHTS.copy()
     optimizer_weights = merged_cfg.get("fusion_weights", {}) or {}
@@ -125,32 +114,6 @@ def _apply_optimizer_config(cfg):
 
     W = weights
     _WEIGHTS = weights
-    _RUNTIME_CFG = merged_cfg
-    return merged_cfg
-
-
-def _get_enabled_rrf_config(cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Return the enabled rrf_fusion block, or None if RRF is disabled."""
-    runtime_cfg = cfg if isinstance(cfg, dict) else _RUNTIME_CFG
-    rrf_cfg = runtime_cfg.get("rrf_fusion", {}) if isinstance(runtime_cfg, dict) else {}
-    if not isinstance(rrf_cfg, dict):
-        return None
-    if not rrf_cfg.get("enabled", False):
-        return None
-    if runtime_cfg.get("fusion_mode") not in ("rrf", "rrf_fusion", None):
-        return None
-    return rrf_cfg
-
-
-def _rrf_weight(rrf_cfg: Dict[str, Any], key: str, default: float = 0.0) -> float:
-    """Read an RRF weight from rrf_fusion.weights, with top-level fallback."""
-    weights = rrf_cfg.get("weights", {}) or {}
-    try:
-        if isinstance(weights, dict) and key in weights:
-            return float(weights[key])
-        return float(rrf_cfg.get(key, default))
-    except (TypeError, ValueError):
-        return float(default)
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -179,24 +142,13 @@ def search_batch(
     # ── Steps 2–6: Per-query retrieval and reranking ───────────────────────────
     results: List[List[int]] = []
 
-    runtime_cfg = _apply_optimizer_config(cfg)
-    rrf_cfg = _get_enabled_rrf_config(runtime_cfg)
+    _apply_optimizer_config(cfg)
 
-    tk_title = int(runtime_cfg.get("top_k_title", runtime_cfg.get("retrieval_top_k_title", 50)))
-
-    if rrf_cfg is not None:
-        # The RRF experiment uses a shared pool_depth for all non-title channels.
-        pool_depth = int(rrf_cfg.get("pool_depth", 200))
-        tk_page = pool_depth
-        tk_chunk = pool_depth
-        tk_bp = pool_depth
-        tk_bc = pool_depth
-        tk_title = int(rrf_cfg.get("top_k_title", tk_title))
-    else:
-        tk_page  = int(runtime_cfg.get("top_k_page", runtime_cfg.get("retrieval_top_k_page", 150)))
-        tk_chunk = int(runtime_cfg.get("top_k_chunk", runtime_cfg.get("retrieval_top_k_chunk", 500)))
-        tk_bp    = int(runtime_cfg.get("top_k_bm25_page", runtime_cfg.get("retrieval_top_k_bm25_page", 200)))
-        tk_bc    = int(runtime_cfg.get("top_k_bm25_chunk", runtime_cfg.get("retrieval_top_k_bm25_chunk", 300)))
+    tk_title   = cfg.get("top_k_title", cfg.get("retrieval_top_k_title", 50))
+    tk_page    = cfg.get("top_k_page", cfg.get("retrieval_top_k_page", 150))
+    tk_chunk   = cfg.get("top_k_chunk", cfg.get("retrieval_top_k_chunk", 500))
+    tk_bp      = cfg.get("top_k_bm25_page", cfg.get("retrieval_top_k_bm25_page", 200))
+    tk_bc      = cfg.get("top_k_bm25_chunk", cfg.get("retrieval_top_k_bm25_chunk", 300))
 
     for q_idx, query in enumerate(queries):
         start, end = spans[q_idx]
@@ -230,7 +182,6 @@ def search_batch(
             bm25_chunk_scores=bm25_chunk_scores,
             pages_by_id=state["pages_by_id"],
             top_k=max(top_k, 10),
-            runtime_cfg=runtime_cfg,
         )
         results.append(ranked)
 
@@ -486,148 +437,6 @@ def _normalize_scores(
     return {p: (scores.get(p, 0.0) - lo) / span for p in pids}
 
 
-
-def _rank_map_from_scores(scores: Dict[int, float]) -> Dict[int, int]:
-    """Convert a score dict into page_id -> zero-based rank, deterministic tie-break by page_id."""
-    return {
-        int(pid): rank
-        for rank, (pid, _) in enumerate(
-            sorted(scores.items(), key=lambda kv: (-float(kv[1]), int(kv[0])))
-        )
-    }
-
-
-def _rerank_rrf(
-    *,
-    query:             str,
-    q_tokens:          List[str],
-    title_scores:      Dict[int, float],
-    page_scores:       Dict[int, float],
-    chunk_scores:      Dict[int, float],
-    bm25_page_scores:  Dict[int, float],
-    bm25_chunk_scores: Dict[int, float],
-    pages_by_id:       Dict[int, Any],
-    top_k:             int,
-    rrf_cfg:           Dict[str, Any],
-) -> List[int]:
-    """
-    RRF reranking path used by scripts/optimize_rrf_reference.py.
-
-    Missing-channel convention: if a page is absent from a channel, that channel
-    contributes 0.0. We do not use a worst-rank proxy.
-
-    Note: the current online retrieval functions aggregate chunk hits to page-level
-    max scores before reranking. Therefore chunk_agg_top_k is stored in the config
-    for experiment tracking, but the online path uses the best page-level chunk
-    score already produced by _faiss_chunk_search/_bm25_search.
-    """
-    mode = str(rrf_cfg.get("mode", rrf_cfg.get("rrf_mode", "three_channel")))
-    rrf_k = float(rrf_cfg.get("rrf_k", 10))
-
-    title_rank = _rank_map_from_scores(title_scores)
-    page_rank = _rank_map_from_scores(page_scores)
-    chunk_rank = _rank_map_from_scores(chunk_scores)
-    bm25_page_rank = _rank_map_from_scores(bm25_page_scores)
-    bm25_chunk_rank = _rank_map_from_scores(bm25_chunk_scores)
-
-    # Exact-match signals
-    q_years   = set(extract_years(query))
-    q_numbers = set(extract_numbers(query))
-    q_tok_set = set(q_tokens)
-
-    # Optional calibrated exact-match weights
-    w_year = _rrf_weight(rrf_cfg, "w_year_num_match", 0.0)
-    w_title_overlap = _rrf_weight(rrf_cfg, "w_title_overlap", 0.0)
-    w_source = _rrf_weight(rrf_cfg, "w_source_bonus", 0.0)
-    w_title_voter = _rrf_weight(rrf_cfg, "w_title", 0.0)
-
-    # Candidate pool: all pages found by at least one selected/available channel.
-    all_pids = set(title_scores) | set(page_scores) | set(chunk_scores) | set(bm25_page_scores) | set(bm25_chunk_scores)
-
-    def exact_features(pid: int) -> Tuple[float, float, float]:
-        meta = pages_by_id.get(pid, {})
-        page_years = set(meta.get("years", []))
-        page_numbers = set(meta.get("numbers", []))
-        year_num = 1.0 if (q_years & page_years) or (q_numbers & page_numbers) else 0.0
-
-        page_title_toks = set(meta.get("title_tokens", []))
-        overlap = len(q_tok_set & page_title_toks)
-        title_ov = min(overlap / max(len(page_title_toks), 1), 1.0)
-
-        n_sources = sum([
-            pid in title_scores,
-            pid in page_scores,
-            pid in chunk_scores,
-            pid in bm25_page_scores,
-            pid in bm25_chunk_scores,
-        ])
-        src_bonus = n_sources / 5.0
-        return year_num, title_ov, src_bonus
-
-    final_scores: Dict[int, float] = {}
-
-    if mode == "three_channel":
-        w_page = _rrf_weight(rrf_cfg, "w_page", 1.5)
-        w_chunk = _rrf_weight(rrf_cfg, "w_chunk", 0.5)
-        w_bm25 = _rrf_weight(rrf_cfg, "w_bm25", 0.75)
-
-        bm25_combined_scores: Dict[int, float] = dict(bm25_page_scores)
-        for pid, score in bm25_chunk_scores.items():
-            if score > bm25_combined_scores.get(pid, -1e9):
-                bm25_combined_scores[pid] = score
-        bm25_combined_rank = _rank_map_from_scores(bm25_combined_scores)
-        all_pids |= set(bm25_combined_scores)
-
-        for pid in all_pids:
-            score = 0.0
-            if pid in page_rank:
-                score += w_page / (rrf_k + page_rank[pid] + 1)
-            if pid in chunk_rank:
-                score += w_chunk / (rrf_k + chunk_rank[pid] + 1)
-            if pid in bm25_combined_rank:
-                score += w_bm25 / (rrf_k + bm25_combined_rank[pid] + 1)
-            if w_title_voter > 0.0 and pid in title_rank:
-                score += w_title_voter / (rrf_k + title_rank[pid] + 1)
-
-            year_num, title_ov, src_bonus = exact_features(pid)
-            score += w_year * year_num
-            score += w_title_overlap * title_ov
-            score += w_source * src_bonus
-            final_scores[pid] = score
-
-    elif mode == "four_channel":
-        w_page_dense = _rrf_weight(rrf_cfg, "w_page_dense", 1.5)
-        w_chunk_dense = _rrf_weight(rrf_cfg, "w_chunk_dense", 0.5)
-        w_page_bm25 = _rrf_weight(rrf_cfg, "w_page_bm25", 0.75)
-        w_chunk_bm25 = _rrf_weight(rrf_cfg, "w_chunk_bm25", 0.75)
-
-        for pid in all_pids:
-            score = 0.0
-            if pid in page_rank:
-                score += w_page_dense / (rrf_k + page_rank[pid] + 1)
-            if pid in chunk_rank:
-                score += w_chunk_dense / (rrf_k + chunk_rank[pid] + 1)
-            if pid in bm25_page_rank:
-                score += w_page_bm25 / (rrf_k + bm25_page_rank[pid] + 1)
-            if pid in bm25_chunk_rank:
-                score += w_chunk_bm25 / (rrf_k + bm25_chunk_rank[pid] + 1)
-            if w_title_voter > 0.0 and pid in title_rank:
-                score += w_title_voter / (rrf_k + title_rank[pid] + 1)
-
-            year_num, title_ov, src_bonus = exact_features(pid)
-            score += w_year * year_num
-            score += w_title_overlap * title_ov
-            score += w_source * src_bonus
-            final_scores[pid] = score
-
-    else:
-        # Unknown RRF mode: fail closed by falling back to the existing weighted path.
-        return []
-
-    ranked_pairs = top_k_items(final_scores, top_k)
-    return [int(pid) for pid, _ in ranked_pairs]
-
-
 def _rerank(
     *,
     query:             str,
@@ -639,7 +448,6 @@ def _rerank(
     bm25_chunk_scores: Dict[int, float],
     pages_by_id:       Dict[int, Any],
     top_k:             int,
-    runtime_cfg:       Optional[Dict[str, Any]] = None,
 ) -> List[int]:
     """
     Merge all retrieval sources and return a deterministic ranked list.
@@ -653,21 +461,6 @@ def _rerank(
     )
     if not all_pids:
         return []
-
-    rrf_cfg = _get_enabled_rrf_config(runtime_cfg)
-    if rrf_cfg is not None:
-        return _rerank_rrf(
-            query=query,
-            q_tokens=q_tokens,
-            title_scores=title_scores,
-            page_scores=page_scores,
-            chunk_scores=chunk_scores,
-            bm25_page_scores=bm25_page_scores,
-            bm25_chunk_scores=bm25_chunk_scores,
-            pages_by_id=pages_by_id,
-            top_k=top_k,
-            rrf_cfg=rrf_cfg,
-        )
 
     # Normalize each source over the full candidate set
     n_t  = _normalize_scores(title_scores,      all_pids)
