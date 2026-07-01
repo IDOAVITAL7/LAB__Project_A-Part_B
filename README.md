@@ -3,7 +3,7 @@
 > **Project:** Project A - Section B Retrieval Pipeline  
 > **Repository:** https://github.com/IDOAVITAL7/LAB__Project_A-Part_B  
 > **Team Members:** Ido Avital, 207850280 | Eliezer Mashihov, 207476763  
-> **Presentation Video:** TODO 
+> **Presentation Video:** https://technionmail-my.sharepoint.com/:f:/g/personal/avital_ido_campus_technion_ac_il/IgDqq-d1v3_CT7K8LbqX-8YvASHQV0FJO35h8ANzyCS_GTY?e=kWscmm
 > **Final Public Validation Result:** `mean_ndcg@10 = 0.3310` | `query_phase_time = 35.85s`
 
 ---
